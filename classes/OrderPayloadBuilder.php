@@ -53,10 +53,13 @@ class MjOrderSyncOrderPayloadBuilder
     private function buildOrder(Order $order): array
     {
         return [
-            'id'        => (int) $order->id,
-            'reference' => $order->reference,
-            'date_add'  => $order->date_add,
-            'date_upd'  => $order->date_upd,
+            'id'            => (int) $order->id,
+            'reference'     => $order->reference,
+            'date_add'      => $order->date_add,
+            'date_upd'      => $order->date_upd,
+            'gift'          => (bool) $order->gift,
+            'gift_message'  => $order->gift_message ?: '',
+            'note'          => $order->note ?: '',
         ];
     }
 
@@ -67,6 +70,7 @@ class MjOrderSyncOrderPayloadBuilder
             'firstname'    => $customer->firstname,
             'lastname'     => $customer->lastname,
             'email'        => $customer->email,
+            'birthday'     => $customer->birthday ?: '',
             'orders_count' => (int) Order::getCustomerNbOrders($customer->id),
         ];
     }
@@ -77,14 +81,16 @@ class MjOrderSyncOrderPayloadBuilder
         $countryIso = $country->iso_code;
 
         return [
-            'firstname' => $address->firstname,
-            'lastname'  => $address->lastname,
-            'address1'  => $address->address1,
-            'address2'  => $address->address2,
-            'postcode'  => $address->postcode,
-            'city'      => $address->city,
-            'country'   => $countryIso,
-            'phone'     => $address->phone ?: $address->phone_mobile,
+            'firstname'  => $address->firstname,
+            'lastname'   => $address->lastname,
+            'company'    => $address->company ?: '',
+            'vat_number' => $address->vat_number ?: '',
+            'address1'   => $address->address1,
+            'address2'   => $address->address2,
+            'postcode'   => $address->postcode,
+            'city'       => $address->city,
+            'country'    => $countryIso,
+            'phone'      => $address->phone ?: $address->phone_mobile,
         ];
     }
 
@@ -95,13 +101,16 @@ class MjOrderSyncOrderPayloadBuilder
 
         foreach ($products as $product) {
             $result[] = [
-                'id_product'          => (int) $product['product_id'],
-                'reference'           => $product['product_reference'],
-                'name'                => $product['product_name'],
-                'quantity'            => (int) $product['product_quantity'],
-                'price_unit_tax_incl' => (float) $product['unit_price_tax_incl'],
-                'price_total_tax_incl'=> (float) $product['total_price_tax_incl'],
-                'tax_rate'            => (float) $product['tax_rate'],
+                'id_product'           => (int) $product['product_id'],
+                'reference'            => $product['product_reference'],
+                'ean13'                => $product['product_ean13'] ?? '',
+                'name'                 => $product['product_name'],
+                'quantity'             => (int) $product['product_quantity'],
+                'qty_refunded'         => (int) ($product['product_quantity_refunded'] ?? 0),
+                'price_unit_tax_excl'  => (float) $product['unit_price_tax_excl'],
+                'price_unit_tax_incl'  => (float) $product['unit_price_tax_incl'],
+                'price_total_tax_incl' => (float) $product['total_price_tax_incl'],
+                'tax_rate'             => (float) $product['tax_rate'],
             ];
         }
 
@@ -112,8 +121,14 @@ class MjOrderSyncOrderPayloadBuilder
     {
         return [
             'total_paid_tax_incl'     => (float) $order->total_paid_tax_incl,
+            'total_paid_real'         => (float) $order->total_paid_real,
+            'total_products'          => (float) $order->total_products,
             'total_products_wt'       => (float) $order->total_products_wt,
             'total_shipping_tax_incl' => (float) $order->total_shipping_tax_incl,
+            'total_shipping_tax_excl' => (float) $order->total_shipping_tax_excl,
+            'total_discounts'         => (float) $order->total_discounts_tax_incl,
+            'total_wrapping_tax_incl' => (float) $order->total_wrapping_tax_incl,
+            'conversion_rate'         => (float) $order->conversion_rate,
             'currency_iso'            => $currency->iso_code,
         ];
     }

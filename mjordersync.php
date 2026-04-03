@@ -105,7 +105,7 @@ class MjOrderSync extends Module
             PRIMARY KEY (`id_log`),
             KEY `idx_order` (`id_order`),
             KEY `idx_created` (`created_at`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;';
+        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4;';
 
         return Db::getInstance()->execute($sql);
     }
@@ -276,8 +276,8 @@ class MjOrderSync extends Module
             self::CFG_WEBHOOK_URL    => Configuration::get(self::CFG_WEBHOOK_URL),
             self::CFG_SECRET_KEY     => Configuration::get(self::CFG_SECRET_KEY),
             self::CFG_ENABLED        => (int) Configuration::get(self::CFG_ENABLED),
-            self::CFG_SEND_ON_CREATE => (int) Configuration::get(self::CFG_SEND_ON_CREATE, null, null, null, 1),
-            self::CFG_SEND_ON_UPDATE => (int) Configuration::get(self::CFG_SEND_ON_UPDATE, null, null, null, 1),
+            self::CFG_SEND_ON_CREATE => (Configuration::get(self::CFG_SEND_ON_CREATE) !== false) ? (int) Configuration::get(self::CFG_SEND_ON_CREATE) : 1,
+            self::CFG_SEND_ON_UPDATE => (Configuration::get(self::CFG_SEND_ON_UPDATE) !== false) ? (int) Configuration::get(self::CFG_SEND_ON_UPDATE) : 1,
         ];
 
         return $helper->generateForm([$fields_form]);
@@ -341,7 +341,8 @@ class MjOrderSync extends Module
      */
     public function hookActionValidateOrder(array $params): void
     {
-        if (!$this->isEnabled() || !(int) Configuration::get(self::CFG_SEND_ON_CREATE)) {
+        $sendOnCreate = Configuration::get(self::CFG_SEND_ON_CREATE);
+        if (!$this->isEnabled() || ($sendOnCreate !== false && !(int) $sendOnCreate)) {
             return;
         }
 
@@ -359,7 +360,8 @@ class MjOrderSync extends Module
      */
     public function hookActionObjectOrderUpdateAfter(array $params): void
     {
-        if (!$this->isEnabled() || !(int) Configuration::get(self::CFG_SEND_ON_UPDATE)) {
+        $sendOnUpdate = Configuration::get(self::CFG_SEND_ON_UPDATE);
+        if (!$this->isEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
             return;
         }
 

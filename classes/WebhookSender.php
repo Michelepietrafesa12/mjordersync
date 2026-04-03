@@ -13,10 +13,10 @@ if (!defined('_PS_VERSION_')) {
 class MjOrderSyncWebhookSender
 {
     /** @var int Connection timeout in seconds */
-    private $connectTimeout = 10;
+    private $connectTimeout = 5;
 
     /** @var int Request timeout in seconds */
-    private $timeout = 30;
+    private $timeout = 8;
 
     /**
      * Send a JSON payload to the given URL.
@@ -67,6 +67,8 @@ class MjOrderSyncWebhookSender
             CURLOPT_TIMEOUT        => $this->timeout,
             CURLOPT_SSL_VERIFYPEER => true,
             CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_MAXREDIRS      => 3,
         ]);
 
         $response = curl_exec($ch);
