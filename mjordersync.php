@@ -342,7 +342,7 @@ class MjOrderSync extends Module
     public function hookActionValidateOrder(array $params): void
     {
         $sendOnCreate = Configuration::get(self::CFG_SEND_ON_CREATE);
-        if (!$this->isEnabled() || ($sendOnCreate !== false && !(int) $sendOnCreate)) {
+        if (!$this->isSyncEnabled() || ($sendOnCreate !== false && !(int) $sendOnCreate)) {
             return;
         }
 
@@ -361,7 +361,7 @@ class MjOrderSync extends Module
     public function hookActionObjectOrderUpdateAfter(array $params): void
     {
         $sendOnUpdate = Configuration::get(self::CFG_SEND_ON_UPDATE);
-        if (!$this->isEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
+        if (!$this->isSyncEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
             return;
         }
 
@@ -406,7 +406,7 @@ class MjOrderSync extends Module
         }
     }
 
-    private function isEnabled(): bool
+    private function isSyncEnabled(): bool
     {
         return (bool) Configuration::get(self::CFG_ENABLED);
     }
