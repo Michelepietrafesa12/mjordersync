@@ -105,7 +105,7 @@ class MjOrderSync extends Module
             PRIMARY KEY (`id_log`),
             KEY `idx_order` (`id_order`),
             KEY `idx_created` (`created_at`)
-        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4;';
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;';
 
         return Db::getInstance()->execute($sql);
     }
