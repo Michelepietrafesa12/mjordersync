@@ -15,9 +15,6 @@ if (!defined('_PS_VERSION_')) {
 
 class MjordersyncCronModuleFrontController extends ModuleFrontController
 {
-    /** @var bool ajax flag is irrelevant here, but keep CSRF off for cron URLs */
-    public $ssl = true;
-
     public function initContent()
     {
         // Don't render the storefront layout at all.
@@ -37,15 +34,22 @@ class MjordersyncCronModuleFrontController extends ModuleFrontController
         if ($batchSize < 1)   { $batchSize = 1; }
         if ($batchSize > 200) { $batchSize = 200; }
 
-        require_once _PS_MODULE_DIR_ . 'mjordersync/classes/QueueProcessor.php';
-        $processor = new MjOrderSyncQueueProcessor();
-
         try {
+            require_once _PS_MODULE_DIR_ . 'mjordersync/classes/QueueProcessor.php';
+            $processor = new MjOrderSyncQueueProcessor();
             $stats = $processor->processBatch($batchSize);
             $out = ['ok' => true, 'stats' => $stats, 'ts' => date('c')];
-        } catch (Exception $e) {
+        } catch (\Throwable $e) {
+            // Throwable catches both Exception and Error (e.g. missing class
+            // file / DB connection issue), so a failing batch always returns
+            // JSON instead of an HTML error page the cron caller can't parse.
             header('HTTP/1.1 500 Internal Server Error');
-            $out = ['ok' => false, 'error' => $e->getMessage(), 'ts' => date('c')];
+            $out = [
+                'ok'    => false,
+                'error' => get_class($e) . ': ' . $e->getMessage(),
+                'at'    => $e->getFile() . ':' . $e->getLine(),
+                'ts'    => date('c'),
+            ];
         }
 
         header('Content-Type: application/json');
