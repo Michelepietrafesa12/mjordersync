@@ -248,7 +248,7 @@ class MjOrderSync extends Module
 
         require_once __DIR__ . '/classes/WebhookSender.php';
         $sender = new MjOrderSyncWebhookSender();
-        $result = $sender->send($url, $payload, Configuration::get(self::CFG_SECRET_KEY));
+        $result = $sender->send($url, $payload, (string) Configuration::get(self::CFG_SECRET_KEY));
 
         if ($result['success']) {
             return $this->displayConfirmation(
