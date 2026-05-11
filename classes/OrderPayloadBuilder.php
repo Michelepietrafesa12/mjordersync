@@ -53,10 +53,11 @@ class MjOrderSyncOrderPayloadBuilder
                 'module' => (string) $order->module,
             ],
             'status'    => [
-                'id'      => (int) $orderState->id,
-                'name'    => $this->extractLocalized($orderState->name, $idLang),
-                'paid'    => (bool) $orderState->paid,
-                'shipped' => (bool) $orderState->shipped,
+                'id'        => (int) $orderState->id,
+                'name'      => $this->extractLocalized($orderState->name, $idLang),
+                'paid'      => (bool) $orderState->paid,
+                'shipped'   => (bool) $orderState->shipped,
+                'delivered' => (bool) $orderState->delivery,
             ],
             'carrier'   => $this->buildCarrier($order, $carrier),
         ];
