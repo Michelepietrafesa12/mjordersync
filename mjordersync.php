@@ -553,7 +553,7 @@ class MjOrderSync extends Module
      */
     public function hookActionValidateOrder(array $params): void
     {
-        if (!$this->isEnabled() || !(int) Configuration::get(self::CFG_SEND_ON_CREATE)) {
+        if (!$this->isSyncEnabled() || !(int) Configuration::get(self::CFG_SEND_ON_CREATE)) {
             return;
         }
 
@@ -577,7 +577,7 @@ class MjOrderSync extends Module
     public function hookActionOrderStatusUpdate(array $params): void
     {
         $sendOnUpdate = Configuration::get(self::CFG_SEND_ON_UPDATE);
-        if (!$this->isEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
+        if (!$this->isSyncEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
             return;
         }
 
@@ -639,7 +639,17 @@ class MjOrderSync extends Module
         }
     }
 
-    private function isEnabled(): bool
+    /**
+     * Whether the webhook sync is turned on in the module config.
+     *
+     * NOTE: NOT named isEnabled() — that name collides with the static
+     * ModuleCore::isEnabled($module_name) declared in PrestaShop core. PHP
+     * refuses at compile time to redeclare a parent static method as
+     * non-static ("Cannot make static method ModuleCore::isEnabled() non
+     * static in class ..."), which on PS 8.x blocks the whole module from
+     * loading.
+     */
+    private function isSyncEnabled(): bool
     {
         return (bool) Configuration::get(self::CFG_ENABLED);
     }
