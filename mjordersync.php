@@ -181,6 +181,11 @@ class MjOrderSync extends Module
             $output .= $this->processManualFlush();
         }
 
+        // Handle resend of a failed log row
+        if (Tools::isSubmit('mjordersync_retry')) {
+            $output .= $this->processRetry((int) Tools::getValue('id_log'));
+        }
+
         // Handle form save
         if (Tools::isSubmit('submitMjOrderSync')) {
             $output .= $this->processForm();
@@ -245,6 +250,49 @@ class MjOrderSync extends Module
         return $this->displayConfirmation(sprintf(
             $this->l('Coda processata: %d tentativi, %d successi, %d retry, %d falliti.'),
             (int) $stats['processed'],
+            (int) $stats['success'],
+            (int) $stats['retry'],
+            (int) $stats['failed']
+        ));
+    }
+
+    /**
+     * Resend a failed log row by rebuilding the payload from the current Order
+     * state and pushing it back through the queue. The payload is rebuilt (not
+     * replayed from the old log) so that any change to the order in the
+     * meantime (tracking number added, status changed, etc.) is reflected.
+     */
+    private function processRetry(int $idLog): string
+    {
+        if ($idLog <= 0) {
+            return $this->displayError($this->l('ID log non valido.'));
+        }
+
+        $row = Db::getInstance()->getRow(
+            'SELECT `id_order`, `event` FROM `' . _DB_PREFIX_ . 'mjordersync_log`
+             WHERE `id_log` = ' . (int) $idLog
+        );
+        if (!$row) {
+            return $this->displayError($this->l('Log non trovato.'));
+        }
+
+        $order = new Order((int) $row['id_order']);
+        if (!Validate::isLoadedObject($order)) {
+            return $this->displayError($this->l('Ordine non più esistente.'));
+        }
+
+        // Re-enqueue with a fresh snapshot from the current Order state.
+        $this->enqueueFromOrder($order, (string) $row['event']);
+
+        // Drain a small batch so the admin gets immediate feedback in the log
+        // rather than waiting for the next cron tick.
+        require_once __DIR__ . '/classes/QueueProcessor.php';
+        $processor = new MjOrderSyncQueueProcessor();
+        $stats = $processor->processBatch(5);
+
+        return $this->displayConfirmation(sprintf(
+            $this->l('Webhook ri-accodato per ordine #%d e processato (%d successi, %d retry, %d falliti). Controlla il log.'),
+            (int) $order->id,
             (int) $stats['success'],
             (int) $stats['retry'],
             (int) $stats['failed']
@@ -426,14 +474,29 @@ class MjOrderSync extends Module
                . '<th>' . $this->l('Evento') . '</th>'
                . '<th>HTTP</th><th>' . $this->l('Data') . '</th>'
                . '<th>' . $this->l('Risposta') . '</th>'
+               . '<th>' . $this->l('Azione') . '</th>'
                . '</tr></thead><tbody>';
 
         foreach ($logs as $row) {
-            $badge = $row['status_code'] >= 200 && $row['status_code'] < 300
-                ? '<span class="badge badge-success">' . $row['status_code'] . '</span>'
-                : '<span class="badge badge-danger">'  . $row['status_code'] . '</span>';
+            $statusCode = (int) $row['status_code'];
+            $isFailure  = ($statusCode < 200 || $statusCode >= 300);
+
+            $badge = !$isFailure
+                ? '<span class="badge badge-success">' . $statusCode . '</span>'
+                : '<span class="badge badge-danger">'  . $statusCode . '</span>';
 
             $response = htmlspecialchars(substr((string)$row['response'], 0, 120));
+
+            $action = '';
+            if ($isFailure) {
+                $retryUrl = AdminController::$currentIndex
+                    . '&configure=' . $this->name
+                    . '&mjordersync_retry=1'
+                    . '&id_log=' . (int) $row['id_log']
+                    . '&token=' . Tools::getAdminTokenLite('AdminModules');
+                $action = '<a href="' . $retryUrl . '" class="btn btn-xs btn-warning">'
+                    . $this->l('Rispedisci') . '</a>';
+            }
 
             $html .= '<tr>'
                    . '<td>' . (int)$row['id_log'] . '</td>'
@@ -444,6 +507,7 @@ class MjOrderSync extends Module
                    . '<td>' . $badge . '</td>'
                    . '<td>' . htmlspecialchars($row['created_at']) . '</td>'
                    . '<td style="max-width:300px;overflow:hidden">' . $response . '</td>'
+                   . '<td>' . $action . '</td>'
                    . '</tr>';
         }
 
