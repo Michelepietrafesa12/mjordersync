@@ -113,6 +113,7 @@ class MjOrderSyncOrderPayloadBuilder
                 'id_product'           => (int) ($row['product_id'] ?? ($row['id_product'] ?? 0)),
                 'id_product_attribute' => (int) ($row['product_attribute_id'] ?? ($row['id_product_attribute'] ?? 0)),
                 'reference'            => (string) ($row['product_reference'] ?? ($row['reference'] ?? '')),
+                'ean13'                => (string) ($row['product_ean13'] ?? ''),
                 'name'                 => (string) ($row['product_name'] ?? ($row['name'] ?? '')),
                 'quantity'             => (int) ($row['product_quantity'] ?? 0),
                 'price_unit_tax_incl'  => (float) ($row['unit_price_tax_incl'] ?? 0),
