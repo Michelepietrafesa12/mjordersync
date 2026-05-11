@@ -3,7 +3,7 @@
  * MJ Order Sync - Real-time order webhook for personal dashboard
  *
  * @author    Michele (pietrafesamichele.it)
- * @version   1.0.0
+ * @version   1.1.0
  * @license   AFL 3.0
  */
 
@@ -20,6 +20,7 @@ class MjOrderSync extends Module
     const CFG_SEND_ON_CREATE = 'MJORDERSYNC_SEND_ON_CREATE';
     const CFG_SEND_ON_UPDATE = 'MJORDERSYNC_SEND_ON_UPDATE';
     const CFG_LAST_LOG       = 'MJORDERSYNC_LAST_LOG';
+    const CFG_CRON_TOKEN     = 'MJORDERSYNC_CRON_TOKEN';
 
     /** Hooks this module registers */
     const HOOKS = [
@@ -31,7 +32,7 @@ class MjOrderSync extends Module
     {
         $this->name    = 'mjordersync';
         $this->tab     = 'administration';
-        $this->version = '1.0.0';
+        $this->version = '1.1.0';
         $this->author  = 'Michele';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '1.7', 'max' => '9.0'];
@@ -40,7 +41,7 @@ class MjOrderSync extends Module
         parent::__construct();
 
         $this->displayName = $this->l('MJ Order Sync – Dashboard in tempo reale');
-        $this->description = $this->l('Invia gli ordini in tempo reale alla tua dashboard tramite webhook. Supporta firma HMAC-SHA256.');
+        $this->description = $this->l('Invia gli ordini in tempo reale alla tua dashboard tramite webhook asincrono (coda + cron). Supporta firma HMAC-SHA256.');
         $this->confirmUninstall = $this->l('Sei sicuro di voler disinstallare MJ Order Sync?');
     }
 
@@ -52,7 +53,9 @@ class MjOrderSync extends Module
     {
         return parent::install()
             && $this->registerHooksArray()
-            && $this->createLogTable();
+            && $this->createLogTable()
+            && $this->createQueueTable()
+            && $this->ensureCronToken();
     }
 
     public function uninstall(): bool
@@ -60,7 +63,8 @@ class MjOrderSync extends Module
         return parent::uninstall()
             && $this->unregisterHooksArray()
             && $this->deleteConfiguration()
-            && $this->dropLogTable();
+            && $this->dropLogTable()
+            && $this->dropQueueTable();
     }
 
     private function registerHooksArray(): bool
@@ -89,6 +93,7 @@ class MjOrderSync extends Module
         Configuration::deleteByName(self::CFG_SEND_ON_CREATE);
         Configuration::deleteByName(self::CFG_SEND_ON_UPDATE);
         Configuration::deleteByName(self::CFG_LAST_LOG);
+        Configuration::deleteByName(self::CFG_CRON_TOKEN);
         return true;
     }
 
@@ -117,6 +122,47 @@ class MjOrderSync extends Module
         );
     }
 
+    private function createQueueTable(): bool
+    {
+        $sql = 'CREATE TABLE IF NOT EXISTS `' . _DB_PREFIX_ . 'mjordersync_queue` (
+            `id_queue`         INT UNSIGNED NOT NULL AUTO_INCREMENT,
+            `id_order`         INT UNSIGNED NOT NULL,
+            `event`            VARCHAR(32)  NOT NULL,
+            `payload_snapshot` MEDIUMTEXT   NOT NULL,
+            `retries`          SMALLINT     UNSIGNED NOT NULL DEFAULT 0,
+            `next_retry_at`    DATETIME     NOT NULL,
+            `status`           VARCHAR(16)  NOT NULL DEFAULT "pending",
+            `last_error`       TEXT         NULL,
+            `created_at`       DATETIME     NOT NULL,
+            `updated_at`       DATETIME     NOT NULL,
+            PRIMARY KEY (`id_queue`),
+            KEY `idx_status_next_retry` (`status`, `next_retry_at`),
+            KEY `idx_order` (`id_order`)
+        ) ENGINE=' . _MYSQL_ENGINE_ . ' DEFAULT CHARSET=utf8mb4;';
+
+        return Db::getInstance()->execute($sql);
+    }
+
+    private function dropQueueTable(): bool
+    {
+        return Db::getInstance()->execute(
+            'DROP TABLE IF EXISTS `' . _DB_PREFIX_ . 'mjordersync_queue`'
+        );
+    }
+
+    private function ensureCronToken(): bool
+    {
+        if (!Configuration::get(self::CFG_CRON_TOKEN)) {
+            try {
+                $token = bin2hex(random_bytes(16));
+            } catch (Exception $e) {
+                $token = md5(uniqid('mjordersync', true));
+            }
+            Configuration::updateValue(self::CFG_CRON_TOKEN, $token);
+        }
+        return true;
+    }
+
     /* ================================================================
      * Admin configuration page
      * ================================================================ */
@@ -130,12 +176,17 @@ class MjOrderSync extends Module
             $output .= $this->processTestPing();
         }
 
+        // Handle manual queue flush (admin-side trigger)
+        if (Tools::isSubmit('mjordersync_flush')) {
+            $output .= $this->processManualFlush();
+        }
+
         // Handle form save
         if (Tools::isSubmit('submitMjOrderSync')) {
             $output .= $this->processForm();
         }
 
-        return $output . $this->renderForm() . $this->renderLog();
+        return $output . $this->renderCronInfo() . $this->renderForm() . $this->renderQueue() . $this->renderLog();
     }
 
     private function processForm(): string
@@ -183,6 +234,42 @@ class MjOrderSync extends Module
         return $this->displayError(
             $this->l('Test fallito: ') . htmlspecialchars($result['error'])
         );
+    }
+
+    private function processManualFlush(): string
+    {
+        require_once __DIR__ . '/classes/QueueProcessor.php';
+        $processor = new MjOrderSyncQueueProcessor();
+        $stats = $processor->processBatch(25);
+
+        return $this->displayConfirmation(sprintf(
+            $this->l('Coda processata: %d tentativi, %d successi, %d retry, %d falliti.'),
+            (int) $stats['processed'],
+            (int) $stats['success'],
+            (int) $stats['retry'],
+            (int) $stats['failed']
+        ));
+    }
+
+    private function renderCronInfo(): string
+    {
+        $token = (string) Configuration::get(self::CFG_CRON_TOKEN);
+        $shop  = Tools::getShopDomainSsl(true);
+        $url   = $shop . __PS_BASE_URI__ . 'index.php?fc=module&module=mjordersync&controller=cron&token=' . urlencode($token);
+
+        return '<div class="panel">'
+            . '<div class="panel-heading"><i class="icon-clock-o"></i> ' . $this->l('Cron processor') . '</div>'
+            . '<div style="padding:15px">'
+            . '<p>' . $this->l('Il webhook è ora asincrono: gli hook accodano gli eventi e il cron li invia in background. Configura un cron job (ogni 1–5 minuti) che richiami questo URL:') . '</p>'
+            . '<pre style="white-space:pre-wrap;word-break:break-all;background:#f5f5f5;padding:10px;border:1px solid #ddd">'
+            . htmlspecialchars($url) . '</pre>'
+            . '<p class="text-muted" style="margin-top:10px">'
+            . $this->l('Esempio crontab (sistema): ') . '<code>* * * * * curl -fsS --max-time 60 "' . htmlspecialchars($url) . '" > /dev/null</code>'
+            . '</p>'
+            . '<p class="text-muted">'
+            . $this->l('Oppure registralo in PrestaShop tramite il modulo "Cron tasks manager" (cronjobs).')
+            . '</p>'
+            . '</div></div>';
     }
 
     private function renderForm(): string
@@ -268,6 +355,16 @@ class MjOrderSync extends Module
                         'class' => 'btn btn-default',
                         'name'  => 'mjordersync_test',
                     ],
+                    [
+                        'href'  => AdminController::$currentIndex
+                            . '&configure=' . $this->name
+                            . '&mjordersync_flush=1'
+                            . '&token=' . Tools::getAdminTokenLite('AdminModules'),
+                        'title' => $this->l('Processa coda ora'),
+                        'icon'  => 'process-icon-play',
+                        'class' => 'btn btn-default',
+                        'name'  => 'mjordersync_flush',
+                    ],
                 ],
             ],
         ];
@@ -281,6 +378,29 @@ class MjOrderSync extends Module
         ];
 
         return $helper->generateForm([$fields_form]);
+    }
+
+    private function renderQueue(): string
+    {
+        $counts = Db::getInstance()->executeS(
+            'SELECT `status`, COUNT(*) AS c
+             FROM `' . _DB_PREFIX_ . 'mjordersync_queue`
+             GROUP BY `status`'
+        );
+
+        $map = ['pending' => 0, 'processing' => 0, 'done' => 0, 'failed' => 0];
+        foreach ((array) $counts as $row) {
+            $map[$row['status']] = (int) $row['c'];
+        }
+
+        return '<div class="panel"><div class="panel-heading">'
+            . '<i class="icon-tasks"></i> ' . $this->l('Stato coda webhook')
+            . '</div><div style="padding:15px">'
+            . '<span class="badge badge-warning">' . $this->l('In attesa') . ': ' . $map['pending'] . '</span> '
+            . '<span class="badge badge-info">' . $this->l('In corso') . ': ' . $map['processing'] . '</span> '
+            . '<span class="badge badge-success">' . $this->l('Inviati') . ': ' . $map['done'] . '</span> '
+            . '<span class="badge badge-danger">' . $this->l('Falliti') . ': ' . $map['failed'] . '</span>'
+            . '</div></div>';
     }
 
     private function renderLog(): string
@@ -333,11 +453,11 @@ class MjOrderSync extends Module
     }
 
     /* ================================================================
-     * Hooks
+     * Hooks (now ASYNC: build payload + enqueue, no HTTP call here)
      * ================================================================ */
 
     /**
-     * Hook: new order created
+     * Hook: new order created – enqueue only, never block checkout.
      */
     public function hookActionValidateOrder(array $params): void
     {
@@ -351,11 +471,11 @@ class MjOrderSync extends Module
             return;
         }
 
-        $this->dispatchWebhook($order, 'order.created');
+        $this->enqueueFromOrder($order, 'order.created');
     }
 
     /**
-     * Hook: order status changed
+     * Hook: order status changed – enqueue only.
      */
     public function hookActionObjectOrderUpdateAfter(array $params): void
     {
@@ -369,36 +489,44 @@ class MjOrderSync extends Module
             return;
         }
 
-        $this->dispatchWebhook($order, 'order.updated');
+        $this->enqueueFromOrder($order, 'order.updated');
     }
 
     /* ================================================================
-     * Core dispatch logic
+     * Enqueue logic
      * ================================================================ */
 
-    private function dispatchWebhook(Order $order, string $event): void
+    /**
+     * Builds the payload snapshot and inserts a row in the queue table.
+     * Must never throw out of the hook: failures are logged silently so they
+     * cannot block the order validation transaction.
+     */
+    private function enqueueFromOrder(Order $order, string $event): void
     {
-        require_once __DIR__ . '/classes/OrderPayloadBuilder.php';
-        require_once __DIR__ . '/classes/WebhookSender.php';
-
-        $webhookUrl = Configuration::get(self::CFG_WEBHOOK_URL);
-        $secretKey  = Configuration::get(self::CFG_SECRET_KEY);
-
-        if (empty($webhookUrl)) {
+        if (empty(Configuration::get(self::CFG_WEBHOOK_URL))) {
             return;
         }
 
         try {
-            $builder  = new MjOrderSyncOrderPayloadBuilder();
-            $payload  = $builder->build($order, $event);
+            require_once __DIR__ . '/classes/OrderPayloadBuilder.php';
+            $builder = new MjOrderSyncOrderPayloadBuilder();
+            $payload = $builder->build($order, $event);
 
-            $sender   = new MjOrderSyncWebhookSender();
-            $result   = $sender->send($webhookUrl, $payload, $secretKey);
-
-            $this->writeLog($order->id, $event, $result, $payload);
+            $now = date('Y-m-d H:i:s');
+            Db::getInstance()->insert('mjordersync_queue', [
+                'id_order'         => (int) $order->id,
+                'event'            => pSQL($event),
+                'payload_snapshot' => pSQL(json_encode($payload), true),
+                'retries'          => 0,
+                'next_retry_at'    => $now,
+                'status'           => 'pending',
+                'created_at'       => $now,
+                'updated_at'       => $now,
+            ]);
         } catch (Exception $e) {
+            // Swallow: hook MUST NOT block the order. Logged for diagnostics.
             PrestaShopLogger::addLog(
-                '[MjOrderSync] Errore dispatch: ' . $e->getMessage(),
+                '[MjOrderSync] Errore enqueue: ' . $e->getMessage(),
                 3, null, 'Order', $order->id
             );
         }
@@ -407,20 +535,5 @@ class MjOrderSync extends Module
     private function isEnabled(): bool
     {
         return (bool) Configuration::get(self::CFG_ENABLED);
-    }
-
-    private function writeLog(int $orderId, string $event, array $result, array $payload): void
-    {
-        $statusCode = (int) ($result['http_code'] ?? 0);
-        $response   = (string) ($result['response'] ?? $result['error'] ?? '');
-
-        Db::getInstance()->insert('mjordersync_log', [
-            'id_order'    => $orderId,
-            'event'       => pSQL($event),
-            'status_code' => $statusCode,
-            'response'    => pSQL(substr($response, 0, 2000)),
-            'payload'     => pSQL(json_encode($payload)),
-            'created_at'  => date('Y-m-d H:i:s'),
-        ]);
     }
 }

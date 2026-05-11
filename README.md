@@ -1,16 +1,35 @@
-# MJ Order Sync v1.0.0
+# MJ Order Sync v1.1.0
 
-Modulo PrestaShop che invia gli ordini **in tempo reale** alla tua dashboard tramite webhook HTTP.
+Modulo PrestaShop che invia gli ordini alla tua dashboard tramite webhook HTTP **asincrono** (coda + cron). Gli hook di PrestaShop accodano solo l'evento (insert DB in pochi millisecondi): la consegna HTTP avviene fuori dalla transazione di checkout, quindi il cliente non aspetta mai il webhook e non c'è rischio di timeout PSP / doppi addebiti.
+
+## Architettura
+
+```
+┌────────────────────┐    insert     ┌──────────────────────┐    HTTP POST   ┌──────────┐
+│ hookActionValidate │──────────────▶│ ps_mjordersync_queue │───────────────▶│  n8n /   │
+│ Order (sync, ms)   │               │ (pending / retry)    │  via cron      │ Supabase │
+└────────────────────┘               └──────────────────────┘                └──────────┘
+                                              ▲
+                                              │ retry backoff (1m → 32m, max 6 tentativi)
+                                              │
+                                       ┌──────┴──────┐
+                                       │  CRON       │
+                                       │  cron.php   │
+                                       └─────────────┘
+```
 
 ## Struttura del modulo
 
 ```
 mjordersync/
-├── mjordersync.php              # File principale del modulo
-├── config.xml                   # Metadati modulo
+├── mjordersync.php                  # File principale + hook (enqueue only)
+├── config.xml                       # Metadati modulo
 ├── classes/
-│   ├── OrderPayloadBuilder.php  # Costruisce il payload JSON completo
-│   └── WebhookSender.php       # Invia la richiesta HTTP con firma HMAC
+│   ├── OrderPayloadBuilder.php      # Costruisce il payload JSON completo
+│   ├── WebhookSender.php            # Invia la richiesta HTTP con firma HMAC
+│   └── QueueProcessor.php           # Consumer della coda (chiamato dal cron)
+├── controllers/front/
+│   └── cron.php                     # Endpoint cron protetto da token
 └── README.md
 ```
 
@@ -19,7 +38,40 @@ mjordersync/
 1. Carica la cartella `mjordersync/` in `/modules/` sul tuo PrestaShop
 2. Vai su **Moduli → Gestione moduli**, cerca "MJ Order Sync"
 3. Clicca **Installa**
-4. Vai su **Configura** e imposta l'URL del webhook
+4. Vai su **Configura**, imposta l'URL del webhook e copia l'URL del cron
+5. Configura il cron (vedi sezione **Cron**)
+
+## Cron
+
+L'invio del webhook è asincrono: l'hook di checkout fa solo un `INSERT` in `ps_mjordersync_queue`. Devi configurare un cron che chiama l'endpoint del modulo per processare la coda.
+
+Nella pagina **Configura** del modulo trovi l'URL pronto all'uso, ad esempio:
+
+```
+https://tuo-shop.it/index.php?fc=module&module=mjordersync&controller=cron&token=<CRON_TOKEN>
+```
+
+### Opzione A — crontab di sistema
+
+```cron
+* * * * * curl -fsS --max-time 60 "https://tuo-shop.it/index.php?fc=module&module=mjordersync&controller=cron&token=XXX" > /dev/null
+```
+
+### Opzione B — modulo PrestaShop *Cron Tasks Manager* (`cronjobs`)
+
+Aggiungi una task che richiama lo stesso URL ogni minuto (o ogni 5 minuti per shop a basso traffico).
+
+### Parametri opzionali
+
+| Parametro | Default | Note |
+|-----------|---------|------|
+| `batch` | `25` | Numero massimo di eventi processati per esecuzione (1–200). |
+
+La risposta è JSON, es. `{"ok":true,"stats":{"processed":3,"success":3,"failed":0,"retry":0},"ts":"..."}`.
+
+### Retry / backoff
+
+Ogni evento ha fino a **6 tentativi** con backoff esponenziale: **1m, 2m, 4m, 8m, 16m, 32m**. Dopo l'ultimo fallimento la riga passa a `status = failed` e non viene più ritentata automaticamente (il `last_error` resta visibile per il debug).
 
 ## Configurazione
 
@@ -149,12 +201,21 @@ if (signature !== expected) {
 
 ## Log invii
 
-Il modulo salva gli ultimi invii nella tabella `ps_mjordersync_log` e li mostra nella pagina di configurazione. Include: ID ordine, evento, HTTP code, risposta, timestamp.
+Il modulo salva gli ultimi invii nella tabella `ps_mjordersync_log` (popolata dal **QueueProcessor**, non dagli hook) e li mostra nella pagina di configurazione. Include: ID ordine, evento, HTTP code, risposta, timestamp.
+
+## Tabelle DB
+
+| Tabella | Scopo |
+|---------|-------|
+| `ps_mjordersync_queue` | Eventi in attesa di consegna (con `payload_snapshot`, `retries`, `next_retry_at`, `status`). |
+| `ps_mjordersync_log` | Storico tentativi di invio HTTP (popolato dal cron). |
 
 ## Hook utilizzati
 
-| Hook | Evento |
-|------|--------|
-| `actionValidateOrder` | Ordine creato (pagamento confermato) |
-| `actionObjectOrderUpdateAfter` | Stato ordine aggiornato |
+| Hook | Evento | Comportamento |
+|------|--------|---------------|
+| `actionValidateOrder` | Ordine creato (pagamento confermato) | **Enqueue only** — `INSERT` in `ps_mjordersync_queue`. Nessuna cURL nel checkout. |
+| `actionObjectOrderUpdateAfter` | Stato ordine aggiornato | **Enqueue only** — stesso meccanismo. |
+
+> Storico: nella v1.0 questi hook eseguivano una cURL sincrona con timeout fino a 13s, che poteva bloccare la pagina di pagamento e causare timeout dal PSP / doppi addebiti su carta di credito. La v1.1 sposta la chiamata HTTP nel cron.
 
