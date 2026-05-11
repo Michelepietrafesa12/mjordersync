@@ -57,62 +57,74 @@ class MjOrderSyncQueueProcessor
         $sender = new MjOrderSyncWebhookSender();
 
         foreach ($rows as $row) {
-            if (!$this->claim((int) $row['id_queue'])) {
-                // Another concurrent worker grabbed it.
-                continue;
-            }
+            try {
+                if (!$this->claim((int) $row['id_queue'])) {
+                    // Another concurrent worker grabbed it.
+                    continue;
+                }
 
-            $stats['processed']++;
+                $stats['processed']++;
 
-            $payload = json_decode((string) $row['payload_snapshot'], true);
-            if (!is_array($payload)) {
-                $this->markFailed((int) $row['id_queue'], 'Invalid payload snapshot (JSON decode failed)');
+                $payload = json_decode((string) $row['payload_snapshot'], true);
+                if (!is_array($payload)) {
+                    $this->markFailed((int) $row['id_queue'], 'Invalid payload snapshot (JSON decode failed)');
+                    $this->writeLog(
+                        (int) $row['id_order'],
+                        (string) $row['event'],
+                        ['http_code' => 0, 'error' => 'Invalid payload snapshot', 'response' => ''],
+                        []
+                    );
+                    $stats['failed']++;
+                    continue;
+                }
+
+                $result = $sender->send($webhookUrl, $payload, $secretKey);
+
                 $this->writeLog(
                     (int) $row['id_order'],
                     (string) $row['event'],
-                    ['http_code' => 0, 'error' => 'Invalid payload snapshot', 'response' => ''],
-                    []
+                    $result,
+                    $payload
                 );
-                $stats['failed']++;
-                continue;
-            }
 
-            $result = $sender->send($webhookUrl, $payload, $secretKey);
+                if (!empty($result['success'])) {
+                    $this->markDone((int) $row['id_queue']);
+                    $stats['success']++;
+                    continue;
+                }
 
-            $this->writeLog(
-                (int) $row['id_order'],
-                (string) $row['event'],
-                $result,
-                $payload
-            );
+                $newRetries = (int) $row['retries'] + 1;
+                if ($newRetries >= self::MAX_RETRIES) {
+                    $this->markFailed(
+                        (int) $row['id_queue'],
+                        (string) ($result['error'] ?? 'Max retries reached')
+                    );
+                    $stats['failed']++;
+                    continue;
+                }
 
-            if (!empty($result['success'])) {
-                $this->markDone((int) $row['id_queue']);
-                $stats['success']++;
-                continue;
-            }
-
-            $newRetries = (int) $row['retries'] + 1;
-            if ($newRetries >= self::MAX_RETRIES) {
-                $this->markFailed(
+                $delaySec = min(
+                    self::BACKOFF_MAX_SECONDS,
+                    self::BACKOFF_BASE_SECONDS * (1 << ($newRetries - 1))
+                );
+                $this->scheduleRetry(
                     (int) $row['id_queue'],
-                    (string) ($result['error'] ?? 'Max retries reached')
+                    $newRetries,
+                    $delaySec,
+                    (string) ($result['error'] ?? '')
                 );
-                $stats['failed']++;
-                continue;
+                $stats['retry']++;
+            } catch (\Throwable $e) {
+                // Don't let a single bad row kill the batch: log, schedule a retry
+                // and move on. Cron will pick it up again on the next tick.
+                $this->scheduleRetry(
+                    (int) $row['id_queue'],
+                    (int) $row['retries'] + 1,
+                    self::BACKOFF_BASE_SECONDS,
+                    'Worker exception: ' . $e->getMessage()
+                );
+                $stats['retry']++;
             }
-
-            $delaySec = min(
-                self::BACKOFF_MAX_SECONDS,
-                self::BACKOFF_BASE_SECONDS * (1 << ($newRetries - 1))
-            );
-            $this->scheduleRetry(
-                (int) $row['id_queue'],
-                $newRetries,
-                $delaySec,
-                (string) ($result['error'] ?? '')
-            );
-            $stats['retry']++;
         }
 
         return $stats;

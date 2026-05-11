@@ -13,7 +13,7 @@ if (!defined('_PS_VERSION_')) {
     exit;
 }
 
-class MjOrderSyncCronModuleFrontController extends ModuleFrontController
+class MjordersyncCronModuleFrontController extends ModuleFrontController
 {
     /** @var bool ajax flag is irrelevant here, but keep CSRF off for cron URLs */
     public $ssl = true;

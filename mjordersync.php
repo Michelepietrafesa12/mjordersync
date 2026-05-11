@@ -598,8 +598,12 @@ class MjOrderSync extends Module
                 'created_at'       => $now,
                 'updated_at'       => $now,
             ]);
-        } catch (Exception $e) {
-            // Swallow: hook MUST NOT block the order. Logged for diagnostics.
+        } catch (\Throwable $e) {
+            // Throwable covers both Exception and Error (PHP 7+).
+            // A missing class file (require_once failure) raises an Error, not an
+            // Exception, so catching only Exception here would let it bubble up
+            // and break order validation. Swallow everything; the hook MUST NOT
+            // block the order. Logged for diagnostics.
             PrestaShopLogger::addLog(
                 '[MjOrderSync] Errore enqueue: ' . $e->getMessage(),
                 3, null, 'Order', $order->id
