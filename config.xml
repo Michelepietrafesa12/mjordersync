@@ -2,7 +2,7 @@
 <module>
     <name>mjordersync</name>
     <displayName><![CDATA[MJ Order Sync – Dashboard in tempo reale]]></displayName>
-    <version><![CDATA[1.0.0]]></version>
+    <version><![CDATA[1.2.0]]></version>
     <description><![CDATA[Invia gli ordini in tempo reale alla dashboard tramite webhook con firma HMAC-SHA256.]]></description>
     <author><![CDATA[Michele (pietrafesamichele.it)]]></author>
     <tab><![CDATA[administration]]></tab>

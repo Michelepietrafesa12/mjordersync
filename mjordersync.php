@@ -25,14 +25,14 @@ class MjOrderSync extends Module
     /** Hooks this module registers */
     const HOOKS = [
         'actionValidateOrder',
-        'actionObjectOrderUpdateAfter',
+        'actionOrderStatusUpdate',
     ];
 
     public function __construct()
     {
         $this->name    = 'mjordersync';
         $this->tab     = 'administration';
-        $this->version = '1.1.0';
+        $this->version = '1.2.0';
         $this->author  = 'Michele';
         $this->need_instance = 0;
         $this->ps_versions_compliancy = ['min' => '1.7', 'max' => '9.0'];
@@ -540,16 +540,27 @@ class MjOrderSync extends Module
 
     /**
      * Hook: order status changed – enqueue only.
+     *
+     * Uses actionOrderStatusUpdate (fires only on real state transitions) instead
+     * of actionObjectOrderUpdateAfter (which fires on every Order save and would
+     * generate 5-10 duplicate webhooks per order during its lifecycle, plus open
+     * the door to update loops when a downstream system writes back to PS).
      */
-    public function hookActionObjectOrderUpdateAfter(array $params): void
+    public function hookActionOrderStatusUpdate(array $params): void
     {
-        if (!$this->isEnabled() || !(int) Configuration::get(self::CFG_SEND_ON_UPDATE)) {
+        $sendOnUpdate = Configuration::get(self::CFG_SEND_ON_UPDATE);
+        if (!$this->isEnabled() || ($sendOnUpdate !== false && !(int) $sendOnUpdate)) {
             return;
         }
 
-        /** @var Order $order */
-        $order = $params['object'] ?? null;
-        if (!$order || !Validate::isLoadedObject($order)) {
+        $newStatus = $params['newOrderStatus'] ?? null;
+        $orderId   = (int) ($params['id_order'] ?? 0);
+        if (!$newStatus || !$orderId) {
+            return;
+        }
+
+        $order = new Order($orderId);
+        if (!Validate::isLoadedObject($order)) {
             return;
         }
 

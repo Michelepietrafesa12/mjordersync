@@ -1,4 +1,4 @@
-# MJ Order Sync v1.1.0
+# MJ Order Sync v1.2.0
 
 Modulo PrestaShop che invia gli ordini alla tua dashboard tramite webhook HTTP **asincrono** (coda + cron). Gli hook di PrestaShop accodano solo l'evento (insert DB in pochi millisecondi): la consegna HTTP avviene fuori dalla transazione di checkout, quindi il cliente non aspetta mai il webhook e non c'è rischio di timeout PSP / doppi addebiti.
 
@@ -30,6 +30,8 @@ mjordersync/
 │   └── QueueProcessor.php           # Consumer della coda (chiamato dal cron)
 ├── controllers/front/
 │   └── cron.php                     # Endpoint cron protetto da token
+├── upgrade/
+│   └── upgrade-1.2.0.php            # Swap automatico hook su install esistenti
 └── README.md
 ```
 
@@ -215,7 +217,11 @@ Il modulo salva gli ultimi invii nella tabella `ps_mjordersync_log` (popolata da
 | Hook | Evento | Comportamento |
 |------|--------|---------------|
 | `actionValidateOrder` | Ordine creato (pagamento confermato) | **Enqueue only** — `INSERT` in `ps_mjordersync_queue`. Nessuna cURL nel checkout. |
-| `actionObjectOrderUpdateAfter` | Stato ordine aggiornato | **Enqueue only** — stesso meccanismo. |
+| `actionOrderStatusUpdate` | Cambio di **stato** ordine | **Enqueue only**. Parte solo su transizione reale di `id_order_state`, non su ogni save di `Order`. |
 
-> Storico: nella v1.0 questi hook eseguivano una cURL sincrona con timeout fino a 13s, che poteva bloccare la pagina di pagamento e causare timeout dal PSP / doppi addebiti su carta di credito. La v1.1 sposta la chiamata HTTP nel cron.
+> **Storico**
+> - v1.0: chiamata HTTP sincrona dentro `actionValidateOrder` con cURL timeout fino a 13s → rischio timeout PSP e doppi addebiti su carta. Risolto in v1.1 con coda + cron.
+> - v1.0–v1.1: si usava `actionObjectOrderUpdateAfter`, che si attivava su ogni save dell'oggetto `Order` (ricalcoli totali, update di campi minori, ecc.) → 5–10 webhook duplicati per ordine, e potenziale loop se un sistema downstream (es. WMS) ri-scrive sull'ordine. v1.2 passa ad `actionOrderStatusUpdate`, che riceve `id_order` + `newOrderStatus` solo sul cambio di stato reale.
+>
+> Su install esistenti lo swap avviene automaticamente tramite `upgrade/upgrade-1.2.0.php`: non serve disinstallare/reinstallare né eseguire SQL. Il cambio di registrazione è anche idempotente.
 
