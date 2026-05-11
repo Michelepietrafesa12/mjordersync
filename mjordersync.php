@@ -169,29 +169,49 @@ class MjOrderSync extends Module
 
     public function getContent(): string
     {
-        $output = '';
+        // Whole body wrapped so a fatal Error in any render/process path is
+        // caught and the actual exception message + location is displayed,
+        // instead of PrestaShop's generic "fatal error" page that hides what
+        // really happened.
+        try {
+            $output = '';
 
-        // Handle test ping
-        if (Tools::isSubmit('mjordersync_test')) {
-            $output .= $this->processTestPing();
+            // Handle test ping
+            if (Tools::isSubmit('mjordersync_test')) {
+                $output .= $this->processTestPing();
+            }
+
+            // Handle manual queue flush (admin-side trigger)
+            if (Tools::isSubmit('mjordersync_flush')) {
+                $output .= $this->processManualFlush();
+            }
+
+            // Handle resend of a failed log row
+            if (Tools::isSubmit('mjordersync_retry')) {
+                $output .= $this->processRetry((int) Tools::getValue('id_log'));
+            }
+
+            // Handle form save
+            if (Tools::isSubmit('submitMjOrderSync')) {
+                $output .= $this->processForm();
+            }
+
+            return $output . $this->renderCronInfo() . $this->renderForm() . $this->renderQueue() . $this->renderLog();
+        } catch (\Throwable $e) {
+            PrestaShopLogger::addLog(
+                '[MjOrderSync] getContent() ' . get_class($e) . ': ' . $e->getMessage()
+                . ' @ ' . $e->getFile() . ':' . $e->getLine(),
+                3
+            );
+            return $this->displayError(sprintf(
+                '%s<br><br><strong>%s</strong>: %s<br><code>%s:%d</code>',
+                $this->l('Errore durante il rendering della pagina di configurazione. Dettagli sotto, e copia di sicurezza in BO -> Parametri avanzati -> Log.'),
+                htmlspecialchars(get_class($e)),
+                htmlspecialchars($e->getMessage()),
+                htmlspecialchars($e->getFile()),
+                (int) $e->getLine()
+            ));
         }
-
-        // Handle manual queue flush (admin-side trigger)
-        if (Tools::isSubmit('mjordersync_flush')) {
-            $output .= $this->processManualFlush();
-        }
-
-        // Handle resend of a failed log row
-        if (Tools::isSubmit('mjordersync_retry')) {
-            $output .= $this->processRetry((int) Tools::getValue('id_log'));
-        }
-
-        // Handle form save
-        if (Tools::isSubmit('submitMjOrderSync')) {
-            $output .= $this->processForm();
-        }
-
-        return $output . $this->renderCronInfo() . $this->renderForm() . $this->renderQueue() . $this->renderLog();
     }
 
     private function processForm(): string
@@ -437,8 +457,16 @@ class MjOrderSync extends Module
         );
 
         $map = ['pending' => 0, 'processing' => 0, 'done' => 0, 'failed' => 0];
-        foreach ((array) $counts as $row) {
-            $map[$row['status']] = (int) $row['c'];
+        // executeS returns false on DB error (e.g. missing table). Guard
+        // explicitly so we don't iterate over [false] and trip the PHP 8
+        // "array offset on bool" warning that some setups elevate to fatal.
+        if (is_array($counts)) {
+            foreach ($counts as $row) {
+                if (!is_array($row) || !isset($row['status'])) {
+                    continue;
+                }
+                $map[$row['status']] = (int) ($row['c'] ?? 0);
+            }
         }
 
         return '<div class="panel"><div class="panel-heading">'
